@@ -69,7 +69,7 @@ class BetterIOPlugin(Star):
         msg = result.get_plain_text()
         if msg in g.bot_msgs:
             event.set_result(event.plain_result(""))
-            logger.info("已阻止重复消息发送")
+            logger.info(f"已阻止发送重复消息：{msg}")
             return
         g.bot_msgs.append(msg)
 
@@ -79,7 +79,7 @@ class BetterIOPlugin(Star):
             for word in iconf["error_words"]:
                 if word in msg:
                     event.set_result(event.plain_result(""))
-                    logger.info("已阻止错误消息发送")
+                    logger.info(f"已阻止发送错误：{msg}")
                     return
 
         # 拦截人机发言
@@ -87,7 +87,7 @@ class BetterIOPlugin(Star):
             for word in iconf["ai_words"]:
                 if word in msg:
                     event.set_result(event.plain_result(""))
-                    logger.info("已阻止人机发言")
+                    logger.info(f"已阻止人机发言:{msg}")
                     return
 
         # 过滤不支持的消息类型
