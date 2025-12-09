@@ -143,7 +143,7 @@
                 "hint": "当消息中包含文本时，按概率@发送者。请提前关闭Astrbot自动的At功能",
                 "default": 0.001
             },
-            "enable_at_str": {
+            "str_at": {
                 "description": "换用字符串@发送者",
                 "type": "bool",
                 "hint": "Astrbot在拼接At与Plain组件时，中间的空格会消失，不介意的话可以换用字符串At来解决此问题",

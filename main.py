@@ -73,13 +73,13 @@ class BetterIOPlugin(Star):
             return
         g.bot_msgs.append(msg)
 
-        # 拦截错误信息(根据关键词拦截)
+        # 拦截错误信息(管理员触发的则不拦截)
         iconf = self.conf["intercept"]
-        if iconf["block_error"] or not event.is_admin():
+        if iconf["block_error"] and not event.is_admin():
             for word in iconf["error_words"]:
                 if word in msg:
                     event.set_result(event.plain_result(""))
-                    logger.info(f"已阻止发送错误：{msg}")
+                    logger.info(f"已阻止发送报错提示：{msg}")
                     return
 
         # 拦截人机发言
