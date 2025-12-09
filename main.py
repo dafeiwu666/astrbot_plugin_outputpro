@@ -73,8 +73,9 @@ class BetterIOPlugin(Star):
         g.bot_msgs.append(msg)
 
         # 拦截错误信息(根据关键词拦截)
-        if self.conf["intercept"]["block_error"] or not event.is_admin():
-            for word in self.conf["error_words"]:
+        iconf = self.conf["intercept"]
+        if iconf["block_error"] or not event.is_admin():
+            for word in iconf["error_words"]:
                 if word in msg:
                     event.set_result(event.plain_result(""))
                     event.stop_event()
@@ -82,8 +83,8 @@ class BetterIOPlugin(Star):
                     return
 
         # 拦截人机发言
-        if self.conf["intercept"]["block_ai"]:
-            for word in self.conf["ai_words"]:
+        if iconf["block_ai"]:
+            for word in iconf["ai_words"]:
                 if word in msg:
                     event.set_result(event.plain_result(""))
                     event.stop_event()
