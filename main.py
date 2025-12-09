@@ -139,13 +139,13 @@ class BetterIOPlugin(Star):
 
             # 2.按概率@发送者
             if (
-                random.random() < self.conf["at_prob"]
+                random.random() < rconf["at_prob"]
                 and isinstance(end_seg, Plain)
                 and end_seg.text.strip()
                 and not any(isinstance(item, At) for item in chain)
                 and not end_seg.text.startswith("@")
             ):
-                if self.conf["enable_at_str"]:
+                if rconf["str_at"]:
                     send_name = event.get_sender_name()
                     end_seg.text = f"@{send_name} {end_seg.text}"
                     logger.debug("已插入假@")
