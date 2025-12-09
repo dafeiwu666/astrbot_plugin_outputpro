@@ -68,7 +68,7 @@ class BetterIOPlugin(Star):
         # 拦截重复消息
         msg = result.get_plain_text()
         if msg in g.bot_msgs:
-            event.stop_event()
+            event.set_result(event.plain_result(""))
             return
         g.bot_msgs.append(msg)
 
@@ -78,7 +78,6 @@ class BetterIOPlugin(Star):
             for word in iconf["error_words"]:
                 if word in msg:
                     event.set_result(event.plain_result(""))
-                    event.stop_event()
                     logger.debug("已阻止错误消息发送")
                     return
 
@@ -87,7 +86,6 @@ class BetterIOPlugin(Star):
             for word in iconf["ai_words"]:
                 if word in msg:
                     event.set_result(event.plain_result(""))
-                    event.stop_event()
                     logger.debug("已阻止人机发言")
                     return
 
@@ -108,7 +106,7 @@ class BetterIOPlugin(Star):
                 end_seg.text = re.sub(r"^@\S+\s*", "", end_seg.text)
 
             # 3.清洗emoji
-            if cconf["clean_emoji"]:
+            if cconf["emoji"]:
                 end_seg.text = emoji.replace_emoji(end_seg.text, replace="")
             # 4.去除指定开头字符
             if cconf["lead"]:
