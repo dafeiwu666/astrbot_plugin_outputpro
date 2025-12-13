@@ -64,7 +64,7 @@ class BetterIOPlugin(Star):
         # 缓存 “昵称 -> QQ”
         sender_id = event.get_sender_id()
         sender_name = event.get_sender_name()
-        if sender_name not in g.name_to_qq and len(g.name_to_qq) == 100:
+        if len(g.name_to_qq) >= 100:
             g.name_to_qq.popitem(last=False)  # FIFO 头删
         g.name_to_qq[sender_name] = sender_id
 
