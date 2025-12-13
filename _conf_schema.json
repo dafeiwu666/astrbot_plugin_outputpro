@@ -154,7 +154,7 @@
     "at_prob": {
         "description": "艾特概率",
         "type": "float",
-        "hint": "第五步：按概率艾特别人（仅aiocqhttp平台）。概率小于此值 → 必须带 @；概率大于此值 → 必须不带 @。设为 0 则关闭此功能。请提前关闭Astrbot自动的At功能",
+        "hint": "第五步：按概率艾特别人（仅aiocqhttp平台）。随机值小于此值 → 必须带 @；随机值大于此值 → 必须不带 @。设为 0 则关闭此功能。请提前关闭Astrbot自动的At功能",
         "default": 0.005
     },
     "smart_reply": {
