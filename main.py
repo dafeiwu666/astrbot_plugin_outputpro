@@ -78,6 +78,7 @@ class BetterIOPlugin(Star):
             event.stop_event()
             return
 
+        # Now safe to extract plain text
         msg = result.get_plain_text()
         gid: str = event.get_group_id()
         g: GroupState = StateManager.get_group(gid)
