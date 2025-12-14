@@ -47,8 +47,8 @@ class BetterIOPlugin(Star):
         super().__init__(context)
         self.conf = config
         # bot管理员(仅取第一位)
-        admins_id: str | None = context.get_config().get("admins_id", [])
-        self.admin_id = admins_id[0] if admins_id else None
+        admins_id: list[str] = context.get_config().get("admins_id", [])
+        self.admin_id: str | None = admins_id[0] if admins_id else None
         # 假艾特正则
         self.at_head_regex = re.compile(
             r"^\s*(?:"
