@@ -81,12 +81,12 @@ class BetterIOPlugin(Star):
         """发送消息前的预处理"""
         # 过滤空消息
         result = event.get_result()
+        if not result:
+            return
         chain = result.chain
-        if not result or not chain:
-            event.stop_event()
+        if not chain:
             return
 
-        # Now safe to extract plain text
         msg = result.get_plain_text()
         gid: str = event.get_group_id()
         g: GroupState = StateManager.get_group(gid)
