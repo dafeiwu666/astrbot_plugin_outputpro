@@ -1,4 +1,27 @@
 {
+    "summary": {
+        "description": "图片外显",
+        "hint": "图片外显：正常的QQ没点进群聊前，若群聊发了一张图片，你只会在外面看见“[图片]”, 而图片外显功能就是为了让 “[图片]” 两字显示成更丰富的文本（仅aiocqhttp平台可用）",
+        "type": "object",
+        "items": {
+            "enable": {
+                "description": "是否开启图片外显",
+                "type": "bool",
+                "default": true
+            },
+            "quotes": {
+                "description": "图片外显金句",
+                "hint": "随机抽取一句金句给图片外显使用。请自行添加",
+                "type": "list",
+                "default": [
+                    "你已被移出群聊",
+                    "[群主女装图]",
+                    "哎呦，你干嘛~",
+                    "Ciallo～(∠・ω< )⌒☆"
+                ]
+            }
+        }
+    },
     "error": {
         "description": "拦截报错配置",
         "type": "object",
@@ -163,7 +186,7 @@
     },
     "at_prob": {
         "description": "艾特概率",
-        "hint": "第六步：按概率艾特别人（仅aiocqhttp平台）。随机值小于此值 → 必须带 @；随机值大于此值 → 必须不带 @。设为 0 则关闭此功能。请提前关闭Astrbot自动的At功能",
+        "hint": "第六步：按概率艾特别人（仅aiocqhttp平台可用）。随机值小于此值 → 必须带 @；随机值大于此值 → 必须不带 @。设为 0 则关闭此功能。请提前关闭Astrbot自动的At功能",
         "type": "float",
         "slider": {
             "min": 0,
@@ -174,8 +197,52 @@
     },
     "smart_reply": {
         "description": "智能引用",
-        "hint": "第七步：智能地引用消息（仅aiocqhttp平台）。当bot要回复的消息不是群里的最新消息时（被顶上去了），引用要回复的消息。 请提前关闭Astrbot自动的Reply功能",
+        "hint": "第七步：智能地引用消息（仅aiocqhttp平台可用）。当bot要回复的消息不是群里的最新消息时（被顶上去了），引用要回复的消息。 请提前关闭Astrbot自动的Reply功能",
         "type": "bool",
         "default": true
+    },
+    "recall": {
+        "description": "智能撤回",
+        "hint": "检测发出的消息是否需要撤回，并执行撤回操作（仅aiocqhttp平台可用）",
+        "type": "object",
+        "items": {
+            "enable": {
+                "description": "是否开启自动撤回",
+                "type": "bool",
+                "default": false
+            },
+            "keywords": {
+                "description": "触发撤回的关键词",
+                "hint": "消息中含有这些关键词时触发自动撤回操作",
+                "type": "list",
+                "default": [
+                    "我是",
+                    "我叫",
+                    "我住在"
+                ]
+            },
+            "max_plain_len": {
+                "description": "触发撤回的文本长度阈值",
+                "hint": "消息文本字数阈值，超过此值时触发自动撤回操作",
+                "type": "int",
+                "slider": {
+                    "min": 10,
+                    "max": 1000,
+                    "step": 10
+                },
+                "default": 50
+            },
+            "delay": {
+                "description": "撤回延时",
+                "hint": "几秒后撤回消息，单位为秒",
+                "type": "int",
+                "slider": {
+                    "min": 0,
+                    "max": 110,
+                    "step": 1
+                },
+                "default": 30
+            }
+        }
     }
 }
