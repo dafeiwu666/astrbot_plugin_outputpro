@@ -1,3 +1,4 @@
+import asyncio
 import random
 import re
 from collections import OrderedDict, deque
@@ -12,10 +13,17 @@ from astrbot.core import AstrBotConfig
 from astrbot.core.message.components import (
     At,
     BaseMessageComponent,
+    Image,
     Plain,
     Reply,
 )
+from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+    AiocqhttpMessageEvent,
+)
+
+from .recall import Recaller
 
 
 class GroupState(BaseModel):
@@ -59,6 +67,15 @@ class BetterIOPlugin(Star):
             r")\s*",
             re.IGNORECASE,
         )
+        # 消息撤回任务
+        self.recall_tasks: list[asyncio.Task] = []
+
+    # ================= 生命周期 ================
+    async def initialize(self):
+        self.recaller = Recaller(self.conf)
+
+    async def terminate(self):
+        await self.recaller.terminate()
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_message(self, event: AstrMessageEvent):
@@ -69,123 +86,14 @@ class BetterIOPlugin(Star):
 
         # 缓存 “昵称 -> QQ”, 为解析假艾特提供映射
         if self.conf["parse_at"]:
-            cache_name_num = 100 # 缓存数量默认100
+            cache_name_num = 100  # 缓存数量默认100
             sender_id = event.get_sender_id()
             sender_name = event.get_sender_name()
             if len(g.name_to_qq) >= cache_name_num:
                 g.name_to_qq.popitem(last=False)  # FIFO 头删
             g.name_to_qq[sender_name] = sender_id
 
-    @filter.on_decorating_result(priority=15)
-    async def on_decorating_result(self, event: AstrMessageEvent):
-        """发送消息前的预处理"""
-        # 过滤空消息
-        result = event.get_result()
-        if not result:
-            return
-        chain = result.chain
-        if not chain:
-            return
-
-        msg = result.get_plain_text()
-        gid: str = event.get_group_id()
-        g: GroupState = StateManager.get_group(gid)
-
-        # 拦截错误信息
-        econf = self.conf["error"]
-        emode = econf["mode"]
-        if emode != "ignore":
-            for word in econf["keywords"]:
-                if word in msg:
-                    if emode == "forward":
-                        if self.admin_id:
-                            event.message_obj.group_id = ""
-                            event.message_obj.sender.user_id = self.admin_id
-                            logger.debug(f"已将消息发送目标改为管理员（{self.admin_id}）私聊")
-                        else:
-                            logger.warning("未配置管理员ID，无法转发错误信息")
-                    elif emode == "block":
-                        event.set_result(event.plain_result(""))
-                        logger.info(f"已阻止发送报错提示：{msg}")
-                        return
-
-        # 仅处理LLM消息
-        if self.conf["only_llm_result"] and not result.is_llm_result():
-            return
-
-        tconf = self.conf["toobot"]
-        # 拦截重复消息
-        if tconf["block_reread"] and msg in g.bot_msgs:
-            event.set_result(event.plain_result(""))
-            logger.info(f"已阻止LLM发送重复消息：{msg}")
-            return
-        g.bot_msgs.append(msg)
-
-        # 拦截人机发言
-        if tconf["block_ai"]:
-            for word in tconf["keywords"]:
-                if word in msg:
-                    event.set_result(event.plain_result(""))
-                    logger.info(f"已阻止LLM过于人机的发言:{msg}")
-                    return
-
-        # 解析 At 消息
-        if self.conf["parse_at"]:
-            await self.parse_ats(chain, g)
-
-        # 清洗文本消息
-        cconf = self.conf["clean"]
-        for seg in chain:
-            if isinstance(seg, Plain) and len(seg.text) < cconf["text_threshold"]:
-                # 摘除中括号内容
-                if cconf["bracket"]:
-                    seg.text = re.sub(r"\[.*?\]", "", seg.text)
-                # 摘除小括号内容（半角/全角）
-                if cconf["parenthesis"]:
-                    seg.text = re.sub(r"[（(].*?[）)]", "", seg.text)
-                # 摘除情绪标签
-                if cconf["emotion_tag"]:
-                    seg.text = re.sub(r"&&.*?&&", "", seg.text)
-                # 清洗emoji
-                if cconf["emoji"]:
-                    seg.text = emoji.replace_emoji(seg.text, replace="")
-                # 去除指定开头字符
-                if cconf["lead"]:
-                    for remove_lead in cconf["lead"]:
-                        if seg.text.startswith(remove_lead):
-                            seg.text = seg.text[len(remove_lead) :]
-                # 去除指定结尾字符
-                if cconf["tail"]:
-                    for remove_tail in cconf["tail"]:
-                        if seg.text.endswith(remove_tail):
-                            seg.text = seg.text[: -len(remove_tail)]
-                # 整体清洗标点符号
-                if cconf["punctuation"]:
-                    seg.text = re.sub(cconf["punctuation"], "", seg.text)
-
-        if event.get_platform_name() == "aiocqhttp":
-
-            if self.conf["at_prob"]:
-                has_at = any(isinstance(c, At) for c in chain)
-                if random.random() < self.conf["at_prob"]:  # 概率命中 → 必须带 @
-                    if not has_at and chain and isinstance(chain[0], Plain):
-                        chain.insert(0, At(qq=event.get_sender_id()))
-                else:  # 概率未命中 → 必须不带 @
-                    if has_at:
-                        chain[:] = [c for c in chain if not isinstance(c, At)]
-
-            # 引用被顶的消息（仅aiocqhttp平台）
-            if self.conf["smart_reply"]:
-                trigger_mid = event.message_obj.message_id
-
-                if (
-                    not any(isinstance(item, Reply) for item in chain)
-                    and trigger_mid != g.last_mid
-                ):
-                    chain.insert(0, Reply(id=trigger_mid))
-                    logger.debug("已插入Reply组件")
-
-    async def parse_ats(
+    async def _parse_ats(
         self, chain: list[BaseMessageComponent], gstate: GroupState
     ) -> None:
         """
@@ -229,3 +137,138 @@ class BetterIOPlugin(Star):
         # 在 Plain 前插入真实 At
         chain.insert(idx, At(qq=qq))
         chain.insert(idx + 1, Plain("\u200b"))  # 防止 At 与文本粘连
+
+    @filter.on_decorating_result(priority=15)
+    async def on_decorating_result(self, event: AstrMessageEvent):
+        """发送消息前的预处理"""
+        # 过滤空消息
+        result = event.get_result()
+        if not result:
+            return
+        chain = result.chain
+        if not chain:
+            return
+
+        # 图片外显
+        if (
+            isinstance(event, AiocqhttpMessageEvent)
+            and self.conf["summary"]["enable"]
+            and len(chain) == 1
+            and isinstance(chain[0], Image)
+        ):
+            obmsg: list[dict] = await event._parse_onebot_json(MessageChain(chain))
+            obmsg[0]["data"]["summary"] = random.choice(self.conf["summary"]["quotes"])
+            raw = event.message_obj.raw_message
+            await event.bot.send(raw, obmsg)  # type: ignore
+            chain.clear()
+            return
+
+
+        msg = result.get_plain_text()
+
+        # 拦截错误信息
+        econf = self.conf["error"]
+        emode = econf["mode"]
+        if emode != "ignore":
+            for word in econf["keywords"]:
+                if word in msg:
+                    if emode == "forward":
+                        if self.admin_id:
+                            event.message_obj.group_id = ""
+                            event.message_obj.sender.user_id = self.admin_id
+                            logger.debug(
+                                f"已将消息发送目标改为管理员（{self.admin_id}）私聊"
+                            )
+                        else:
+                            logger.warning("未配置管理员ID，无法转发错误信息")
+                    elif emode == "block":
+                        event.set_result(event.plain_result(""))
+                        logger.info(f"已阻止发送报错提示：{msg}")
+                        return
+
+        # 仅处理LLM消息
+        if self.conf["only_llm_result"] and not result.is_llm_result():
+            return
+
+        gid: str = event.get_group_id()
+        g: GroupState = StateManager.get_group(gid)
+
+        tconf = self.conf["toobot"]
+        # 拦截重复消息
+        if tconf["block_reread"] and msg in g.bot_msgs:
+            event.set_result(event.plain_result(""))
+            logger.info(f"已阻止LLM发送重复消息：{msg}")
+            return
+        g.bot_msgs.append(msg)
+
+        # 拦截人机发言
+        if tconf["block_ai"]:
+            for word in tconf["keywords"]:
+                if word in msg:
+                    event.set_result(event.plain_result(""))
+                    logger.info(f"已阻止LLM过于人机的发言:{msg}")
+                    return
+
+        # 解析 At 消息
+        if self.conf["parse_at"]:
+            await self._parse_ats(chain, g)
+
+        # 清洗文本消息
+        cconf = self.conf["clean"]
+        for seg in chain:
+            if isinstance(seg, Plain) and len(seg.text) < cconf["text_threshold"]:
+                # 摘除中括号内容
+                if cconf["bracket"]:
+                    seg.text = re.sub(r"\[.*?\]", "", seg.text)
+                # 摘除小括号内容（半角/全角）
+                if cconf["parenthesis"]:
+                    seg.text = re.sub(r"[（(].*?[）)]", "", seg.text)
+                # 摘除情绪标签
+                if cconf["emotion_tag"]:
+                    seg.text = re.sub(r"&&.*?&&", "", seg.text)
+                # 清洗emoji
+                if cconf["emoji"]:
+                    seg.text = emoji.replace_emoji(seg.text, replace="")
+                # 去除指定开头字符
+                if cconf["lead"]:
+                    for remove_lead in cconf["lead"]:
+                        if seg.text.startswith(remove_lead):
+                            seg.text = seg.text[len(remove_lead) :]
+                # 去除指定结尾字符
+                if cconf["tail"]:
+                    for remove_tail in cconf["tail"]:
+                        if seg.text.endswith(remove_tail):
+                            seg.text = seg.text[: -len(remove_tail)]
+                # 整体清洗标点符号
+                if cconf["punctuation"]:
+                    seg.text = re.sub(cconf["punctuation"], "", seg.text)
+
+
+        if isinstance(event, AiocqhttpMessageEvent):
+
+            # 智能艾特
+            if self.conf["at_prob"]:
+                has_at = any(isinstance(c, At) for c in chain)
+                if random.random() < self.conf["at_prob"]:  # 概率命中 → 必须带 @
+                    if not has_at and chain and isinstance(chain[0], Plain):
+                        chain.insert(0, At(qq=event.get_sender_id()))
+                else:  # 概率未命中 → 必须不带 @
+                    if has_at:
+                        chain[:] = [c for c in chain if not isinstance(c, At)]
+
+            # 智能引用被顶的消息
+            if self.conf["smart_reply"]:
+                trigger_mid = event.message_obj.message_id
+
+                if (
+                    not any(isinstance(item, Reply) for item in chain)
+                    and trigger_mid != g.last_mid
+                ):
+                    chain.insert(0, Reply(id=trigger_mid))
+                    logger.debug("已插入Reply组件")
+
+            # 智能撤回
+            if self.conf["recall"]["enable"]:
+                await self.recaller.send_and_recall(event)
+
+
