@@ -12,6 +12,7 @@ from astrbot.core import AstrBotConfig
 from astrbot.core.message.components import (
     At,
     BaseMessageComponent,
+    Face,
     Image,
     Plain,
     Reply,
@@ -246,25 +247,26 @@ class OutputPlugin(Star):
                 if cconf["punctuation"]:
                     seg.text = re.sub(cconf["punctuation"], "", seg.text)
 
+        # Aiocqhttp 平台专属处理
         if isinstance(event, AiocqhttpMessageEvent):
             # 智能艾特
-            if self.conf["at_prob"]:
-                has_at = any(isinstance(c, At) for c in chain)
-                if random.random() < self.conf["at_prob"]:  # 概率命中 → 必须带 @
-                    if not has_at and chain and isinstance(chain[0], Plain):
-                        chain.insert(0, At(qq=event.get_sender_id()))
-                else:  # 概率未命中 → 必须不带 @
-                    if has_at:
-                        chain[:] = [c for c in chain if not isinstance(c, At)]
+            if all(isinstance(seg, Plain | Image | Face | At | Reply) for seg in chain):
+                if self.conf["at_prob"]:
+                    has_at = any(isinstance(c, At) for c in chain)
+                    if random.random() < self.conf["at_prob"]:  # 概率命中 → 必须带 @
+                        if not has_at and chain and isinstance(chain[0], Plain):
+                            chain.insert(0, At(qq=event.get_sender_id()))
+                    else:  # 概率未命中 → 必须不带 @
+                        if has_at:
+                            chain[:] = [c for c in chain if not isinstance(c, At)]
 
-            # 智能引用被顶的消息
-            if self.conf["reply_threshold"] > 0:
-                # 当前事件也会使 g.after_bot_count 加 1，故要减 1
-                effective_count = g.after_bot_count - 1
-                if (
-                    not any(isinstance(item, Reply) for item in chain)
-                    and effective_count >= self.conf["reply_threshold"] + 1
-                ):
+            # 智能引用
+            if (
+                all(isinstance(seg, Plain | Image | Face | At) for seg in chain)
+                and self.conf["reply_threshold"] > 0
+            ):
+                # 当前事件也会使 g.after_bot_count 加 1，故要减 1 抵消
+                if g.after_bot_count - 1 >= self.conf["reply_threshold"]:
                     chain.insert(0, Reply(id=event.message_obj.message_id))
                     logger.debug("已插入Reply组件")
                 # 重置计数器
