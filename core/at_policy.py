@@ -39,6 +39,23 @@ class AtPolicy:
                 return True
         return False
 
+    def _insert_at(self, chain, qq, nickname=None):
+        if not self.conf["parse_at"]["enable"]:
+            return
+
+        insert_idx = 0
+        for i, c in enumerate(chain):
+            if isinstance(c, Plain):
+                insert_idx = i
+                break
+
+        if self.conf["parse_at"]["at_str"]:
+            display = nickname or qq
+            chain.insert(insert_idx, Plain(f"@{display} "))
+        else:
+            chain.insert(insert_idx, At(qq=qq))
+            chain.insert(insert_idx + 1, Plain("\u200b"))
+
     # -------------------------
     # 假 at 解析（只读）
     # -------------------------
@@ -81,15 +98,11 @@ class AtPolicy:
         if not seg.text:
             chain.pop(idx)
 
-        if not self.conf["parse_at"]["enable"] or not qq:
-            return
-
-        if self.conf["parse_at"]["at_str"]:
-            display = nickname or qq
-            seg.text = f"@{display} " + seg.text
-        else:
-            chain.insert(idx, At(qq=qq))
-            chain.insert(idx + 1, Plain("\u200b"))
+        self._insert_at(
+            chain,
+            qq=qq,
+            nickname=nickname,
+        )
 
     # -------------------------
     # 主入口
@@ -117,7 +130,11 @@ class AtPolicy:
 
         # 命中 → 必须有 at
         if hit and not has_at and chain and isinstance(chain[0], Plain):
-            chain.insert(0, At(qq=event.get_sender_id()))
+            self._insert_at(
+                chain,
+                qq=event.get_sender_id(),
+                nickname=event.get_sender_name(),
+            )
 
         # 未命中 → 清除所有 at
         elif not hit and has_at:
@@ -126,7 +143,7 @@ class AtPolicy:
                 if isinstance(c, At):
                     continue
                 if isinstance(c, Plain):
-                    c.text = self.at_head_regex.sub("", c.text, count=1)
+                    c.text = self.at_head_regex.sub("", c.text, count=1).strip()
                     if not c.text:
                         continue
                 new_chain.append(c)
