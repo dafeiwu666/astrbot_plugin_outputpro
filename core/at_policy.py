@@ -105,14 +105,15 @@ class AtPolicy:
         self._apply_fake_at(chain, idx, qq, nickname)
 
         # ===== 2. 智能艾特 =====
+        at_prob = self.conf["parse_at"]["at_prob"]
         if not (
-            self.conf["at_prob"] > 0
+            at_prob > 0
             and all(isinstance(c, Plain | Image | Face | At | Reply) for c in chain)
         ):
             return
 
         has_at = self._has_at(chain)
-        hit = random.random() < self.conf["at_prob"]
+        hit = random.random() < at_prob
 
         # 命中 → 必须有 at
         if hit and not has_at and chain and isinstance(chain[0], Plain):
