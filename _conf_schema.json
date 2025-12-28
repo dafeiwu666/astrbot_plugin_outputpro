@@ -52,7 +52,7 @@
     "only_llm_result": {
         "description": "只处理LLM结果",
         "type": "bool",
-        "hint": "第三步：只处理 LLM返回的消息。建议打开。作用域: 人机拦截、艾特配置、文本清理、引用阈值",
+        "hint": "第三步：只处理 LLM返回的消息。建议打开。作用域: 人机拦截、艾特配置、文本清理、TTS、引用阈值",
         "default": true
     },
     "toobot": {
