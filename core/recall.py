@@ -11,6 +11,7 @@ from astrbot.core.message.components import (
     Face,
     Forward,
     Image,
+    Nodes,
     Plain,
     Reply,
     Video,
@@ -44,15 +45,8 @@ class Recaller:
 
     def _is_recall(self, chain: list[BaseMessageComponent]) -> bool:
         """判断消息是否需撤回"""
-        max_plain_len = self.conf["recall"]["max_plain_len"]
         for seg in chain:
             if isinstance(seg, Plain):
-                # 判断长文本
-                if len(seg.text) > max_plain_len:
-                    logger.debug(
-                        f"文本长度：{len(seg.text)} > {max_plain_len}， 需要撤回"
-                    )
-                    return True
                 # 判断关键词
                 for word in self.conf["recall"]["keywords"]:
                     if word in seg.text:
@@ -82,7 +76,9 @@ class Recaller:
             return
         # 无有效消息段直接退出
         if not any(
-            isinstance(seg, Plain | Image | Video | Face | At | AtAll | Forward | Reply)
+            isinstance(
+                seg, Plain | Image | Video | Face | At | AtAll | Forward | Reply | Nodes
+            )
             for seg in chain
         ):
             return
@@ -106,10 +102,7 @@ class Recaller:
             )
 
         # 启动撤回任务
-        if (
-            send_result
-            and (message_id := send_result.get("message_id"))
-        ):
+        if send_result and (message_id := send_result.get("message_id")):
             task = asyncio.create_task(self._recall_msg(client, int(message_id)))  # type: ignore
             task.add_done_callback(self._remove_task)
             self.recall_tasks.append(task)

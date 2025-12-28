@@ -1,9 +1,7 @@
 import random
 import re
-from collections import OrderedDict, deque
 
 import emoji
-from pydantic import BaseModel, Field
 
 from astrbot import logger
 from astrbot.api.event import filter
@@ -11,9 +9,10 @@ from astrbot.api.star import Context, Star
 from astrbot.core import AstrBotConfig
 from astrbot.core.message.components import (
     At,
-    BaseMessageComponent,
     Face,
     Image,
+    Node,
+    Nodes,
     Plain,
     Reply,
 )
@@ -23,30 +22,9 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
 
-from .recall import Recaller
-
-
-class GroupState(BaseModel):
-    gid: str
-    """群号"""
-    bot_msgs: deque = Field(default_factory=lambda: deque(maxlen=5))
-    """Bot消息缓存"""
-    after_bot_count: int = 0
-    """被顶了多少条消息"""
-    name_to_qq: OrderedDict[str, str] = Field(default_factory=lambda: OrderedDict())
-    """昵称 -> QQ"""
-
-
-class StateManager:
-    """内存状态管理"""
-
-    _groups: dict[str, GroupState] = {}
-
-    @classmethod
-    def get_group(cls, gid: str) -> GroupState:
-        if gid not in cls._groups:
-            cls._groups[gid] = GroupState(gid=gid)
-        return cls._groups[gid]
+from .core.at_policy import AtPolicy
+from .core.recall import Recaller
+from .core.state import GroupState, StateManager
 
 
 class OutputPlugin(Star):
@@ -56,16 +34,8 @@ class OutputPlugin(Star):
         # bot管理员(仅取第一位)
         admins_id: list[str] = context.get_config().get("admins_id", [])
         self.admin_id: str | None = admins_id[0] if admins_id else None
-        # 假艾特正则
-        self.at_head_regex = re.compile(
-            r"^\s*(?:"
-            r"\[at[:：]\s*(\d+)\]"  # [at:123]
-            r"|\[at[:：]\s*([^\]]+)\]"  # [at:nick]
-            r"|@(\d{5,12})"  # @123456
-            r"|@([\u4e00-\u9fa5\w-]{2,20})"  # @昵称
-            r")\s*",
-            re.IGNORECASE,
-        )
+
+        self.at_policy = AtPolicy(self.conf)
 
     # ================= 生命周期 ================
     async def initialize(self):
@@ -73,6 +43,29 @@ class OutputPlugin(Star):
 
     async def terminate(self):
         await self.recaller.terminate()
+
+    async def _ensure_node_name(self, event: AstrMessageEvent) -> str:
+        """确保转发节点昵称不为空"""
+        fconf = self.conf["forward"]
+        if fconf.get("node_name"):
+            return fconf["node_name"]
+
+        new_name = "AstrBot"
+
+        if isinstance(event, AiocqhttpMessageEvent):
+            try:
+                login_data = await event.bot.get_login_info()
+                print(login_data)
+                nickname = login_data.get("nickname")
+                if nickname:
+                    new_name = str(nickname)
+            except Exception:
+                pass
+
+        fconf["node_name"] = new_name
+        self.conf.save_config()
+
+        return new_name
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_message(self, event: AstrMessageEvent):
@@ -87,60 +80,12 @@ class OutputPlugin(Star):
             g.after_bot_count += 1
 
         # 缓存 “昵称 -> QQ”, 为解析假艾特提供映射
-        if self.conf["parse_at"]:
+        if self.conf["parse_at"]["enable"]:
             cache_name_num = 100  # 缓存数量默认100
             sender_name = event.get_sender_name()
             if len(g.name_to_qq) >= cache_name_num:
                 g.name_to_qq.popitem(last=False)  # FIFO 头删
             g.name_to_qq[sender_name] = sender_id
-
-    async def _parse_ats(
-        self, chain: list[BaseMessageComponent], gstate: GroupState
-    ) -> None:
-        """
-        解析“句首”的假艾特，并替换为真实 At 组件
-        - 只处理第一个 Plain
-        - 最多插入一个 At
-        """
-
-        # 找到第一个有文本的 Plain
-        found = next(
-            (
-                (i, seg)
-                for i, seg in enumerate(chain)
-                if isinstance(seg, Plain) and seg.text
-            ),
-            None,
-        )
-        if not found:
-            return
-
-        idx, seg = found
-        text = seg.text
-
-        # 句首假艾特匹配
-        m = self.at_head_regex.match(text)
-        if not m:
-            return
-
-        qq = (
-            m.group(1)  # [at:123]
-            or gstate.name_to_qq.get(m.group(2))  # [at:nick]
-            or m.group(3)  # @数字QQ
-            or gstate.name_to_qq.get(m.group(4))  # @昵称
-        )
-        if not qq:
-            return
-
-        # 剪掉假艾特文本
-        seg.text = text[m.end() :]
-        if not seg.text:
-            chain.pop(idx)
-            return
-
-        # 在 Plain 前插入真实 At
-        chain.insert(idx, At(qq=qq))
-        chain.insert(idx + 1, Plain("\u200b"))  # 防止 At 与文本粘连
 
     @filter.on_decorating_result(priority=15)
     async def on_decorating_result(self, event: AstrMessageEvent):
@@ -213,9 +158,9 @@ class OutputPlugin(Star):
                     logger.info(f"已阻止LLM过于人机的发言:{msg}")
                     return
 
-        # 解析 At 消息
-        if self.conf["parse_at"]:
-            await self._parse_ats(chain, g)
+        # 解析 At 消息 + 概率At
+        if self.conf["parse_at"]["enable"]:
+            self.at_policy.handle(event, chain, g)
 
         # 清洗文本消息
         cconf = self.conf["clean"]
@@ -247,31 +192,33 @@ class OutputPlugin(Star):
                 if cconf["punctuation"]:
                     seg.text = re.sub(cconf["punctuation"], "", seg.text)
 
-        # Aiocqhttp 平台专属处理
-        if isinstance(event, AiocqhttpMessageEvent):
-            # 智能艾特
-            if all(isinstance(seg, Plain | Image | Face | At | Reply) for seg in chain):
-                if self.conf["at_prob"]:
-                    has_at = any(isinstance(c, At) for c in chain)
-                    if random.random() < self.conf["at_prob"]:  # 概率命中 → 必须带 @
-                        if not has_at and chain and isinstance(chain[0], Plain):
-                            chain.insert(0, At(qq=event.get_sender_id()))
-                    else:  # 概率未命中 → 必须不带 @
-                        if has_at:
-                            chain[:] = [c for c in chain if not isinstance(c, At)]
+        # 智能引用
+        if (
+            all(isinstance(seg, Plain | Image | Face | At) for seg in chain)
+            and self.conf["reply_threshold"] > 0
+        ):
+            # 当前事件也会使 g.after_bot_count 加 1，这里用  -1 表示只统计之前的消息
+            if g.after_bot_count - 1 >= self.conf["reply_threshold"]:
+                chain.insert(0, Reply(id=event.message_obj.message_id))
+                logger.debug("已插入Reply组件")
+            # 重置计数器
+            g.after_bot_count = 0
 
-            # 智能引用
-            if (
-                all(isinstance(seg, Plain | Image | Face | At) for seg in chain)
-                and self.conf["reply_threshold"] > 0
-            ):
-                # 当前事件也会使 g.after_bot_count 加 1，这里用  -1 表示只统计之前的消息
-                if g.after_bot_count - 1 >= self.conf["reply_threshold"]:
-                    chain.insert(0, Reply(id=event.message_obj.message_id))
-                    logger.debug("已插入Reply组件")
-                # 重置计数器
-                g.after_bot_count = 0
+        # 自动转发
+        if (
+            isinstance(event, AiocqhttpMessageEvent)
+            and self.conf["forward"]["enable"]
+            and isinstance(chain[-1], Plain)
+        ):
+            seg = chain[-1]
+            if len(seg.text) > self.conf["forward"]["threshold"]:
+                nodes = Nodes([])
+                self_id = event.get_self_id()
+                name = await self._ensure_node_name(event)
+                for seg in chain:
+                    nodes.nodes.append(Node(uin=self_id, name=name, content=[seg]))
+                chain[:] = [nodes]
 
-            # 智能撤回
-            if self.conf["recall"]["enable"]:
-                await self.recaller.send_and_recall(event)
+        # 自动撤回
+        if isinstance(event, AiocqhttpMessageEvent) and self.conf["recall"]["enable"]:
+            await self.recaller.send_and_recall(event)
