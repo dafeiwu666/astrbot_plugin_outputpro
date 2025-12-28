@@ -265,7 +265,7 @@ class OutputPlugin(Star):
                 all(isinstance(seg, Plain | Image | Face | At) for seg in chain)
                 and self.conf["reply_threshold"] > 0
             ):
-                # 当前事件也会使 g.after_bot_count 加 1，故要减 1 抵消
+                # 当前事件也会使 g.after_bot_count 加 1，这里用  -1 表示只统计之前的消息
                 if g.after_bot_count - 1 >= self.conf["reply_threshold"]:
                     chain.insert(0, Reply(id=event.message_obj.message_id))
                     logger.debug("已插入Reply组件")
