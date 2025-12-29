@@ -1,7 +1,9 @@
 import random
 import re
 import shutil
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import TypeAlias
 
 import emoji
 
@@ -11,6 +13,7 @@ from astrbot.api.star import Context, Star
 from astrbot.core import AstrBotConfig
 from astrbot.core.message.components import (
     At,
+    BaseMessageComponent,
     Face,
     Image,
     Node,
@@ -19,7 +22,7 @@ from astrbot.core.message.components import (
     Record,
     Reply,
 )
-from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.message.message_event_result import MessageChain, MessageEventResult
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
@@ -31,6 +34,62 @@ from .core.recall import Recaller
 from .core.split import MessageSplitter
 from .core.state import GroupState, StateManager
 
+# ============================================================
+# Typing
+# ============================================================
+
+StepResult: TypeAlias = bool | None
+StepHandler: TypeAlias = Callable[
+    [AstrMessageEvent, list[BaseMessageComponent], MessageEventResult],
+    Awaitable[StepResult],
+]
+
+
+# ============================================================
+# Pipeline Core
+# ============================================================
+
+
+class Step:
+    """单个流水线步骤"""
+
+    def __init__(self, name: str, handler: StepHandler):
+        self.name = name
+        self.handler = handler
+
+
+class Pipeline:
+    """顺序执行流水线"""
+
+    def __init__(self, steps: list[Step], llm_steps: list[str]):
+        self.steps = steps
+        self.llm_steps = llm_steps
+
+    def llm_allow(self, step_name: str, result) -> bool:
+        if not self.llm_steps:
+            return True
+        return step_name not in self.llm_steps or result.is_llm_result()
+
+    async def run(
+        self,
+        event: AstrMessageEvent,
+        chain: list[BaseMessageComponent],
+        result: MessageEventResult,
+    ) -> bool:
+        for step in self.steps:
+            if not self.llm_allow(step.name, result):
+                continue
+            ret = await step.handler(event, chain, result)
+            if ret is False:
+                return False
+
+        return True
+
+
+# ============================================================
+# Plugin
+# ============================================================
+
 
 class OutputPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -41,284 +100,356 @@ class OutputPlugin(Star):
         self.image_cache_dir = self.data_dir / "image_cache"
         self.image_cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # bot管理员(仅取第一位)
         admins_id: list[str] = context.get_config().get("admins_id", [])
         self.admin_id: str | None = admins_id[0] if admins_id else None
 
-        self.at_policy = AtPolicy(self.conf)
-
-        # 分段回复器
+        self.at_policy = AtPolicy(config)
         self.splitter = MessageSplitter(context, config)
-
         self.style = None
 
-    # ================= 生命周期 ================
-    async def initialize(self):
-        # 撤回器
-        self.recaller = Recaller(self.conf)
-        # 渲染器
-        if self.conf["t2i"]["enable"]:
-            try:
-                import pillowmd
+        self._enabled_steps: list[str] = [
+            self._normalize_step_name(name) for name in config["pipeline"]["steps"]
+        ]
 
-                style_path = Path(self.conf["t2i"]["pillowmd_style_dir"]).resolve()
-                self.style = pillowmd.LoadMarkdownStyles(style_path)
-            except ImportError as e:
-                logger.error(
-                    f"无法加载 pillowmd：未安装 pillowmd 包。请先安装依赖，例如：pip install pillowmd : {e}"
-                )
-            except Exception as e:
-                logger.error(f"无法加载 pillowmd 样式：{e}")
+        self._llm_steps: list[str] = [
+            self._normalize_step_name(s) for s in config["pipeline"]["llm_steps"]
+        ]
 
-    async def terminate(self):
-        # 终止撤回器
-        await self.recaller.terminate()
-        # 清空缓存目录
-        if (
-            self.conf["t2i"]["clean_cache"]
-            and self.image_cache_dir
-            and self.image_cache_dir.exists()
-        ):
-            try:
-                shutil.rmtree(self.image_cache_dir)
-                logger.debug(f"缓存已清空：{self.image_cache_dir}")
-            except Exception as e:
-                logger.error(f"清空缓存失败：{e}")
-            self.image_cache_dir.mkdir(parents=True, exist_ok=True)
+        self.pipeline = self._build_pipeline()
+
+    # ============================================================
+    # Helpers
+    # ============================================================
+
+    def is_step_enabled(self, name: str) -> bool:
+        """判断步骤是否启用"""
+        return name in self._enabled_steps
+
+    def _normalize_step_name(self, name: str) -> str:
+        """去掉显示用的后缀，如 summary(图片外显) -> summary"""
+        return name.split("(", 1)[0].strip()
 
     async def _ensure_node_name(self, event: AstrMessageEvent) -> str:
-        """确保转发节点昵称不为空"""
+        """确保消息节点名称"""
         fconf = self.conf["forward"]
+
         if fconf.get("node_name"):
             return fconf["node_name"]
 
         new_name = "AstrBot"
-
         if isinstance(event, AiocqhttpMessageEvent):
             try:
-                login_data = await event.bot.get_login_info()
-                print(login_data)
-                nickname = login_data.get("nickname")
-                if nickname:
-                    new_name = str(nickname)
+                info = await event.bot.get_login_info()
+                if info.get("nickname"):
+                    new_name = str(info["nickname"])
             except Exception:
                 pass
 
         fconf["node_name"] = new_name
         self.conf.save_config()
-
         return new_name
+
+    # ============================================================
+    # Lifecycle
+    # ============================================================
+
+    async def initialize(self):
+        self.recaller = Recaller(self.conf)
+
+        if self.is_step_enabled("t2i"):
+            try:
+                import pillowmd
+
+                style_path = Path(self.conf["t2i"]["pillowmd_style_dir"]).resolve()
+                self.style = pillowmd.LoadMarkdownStyles(style_path)
+            except Exception as e:
+                logger.error(f"加载 pillowmd 失败: {e}")
+
+    async def terminate(self):
+        await self.recaller.terminate()
+        if self.conf["t2i"]["clean_cache"] and self.image_cache_dir.exists():
+            try:
+                shutil.rmtree(self.image_cache_dir)
+            except Exception as e:
+                logger.error(f"清理缓存失败: {e}")
+            self.image_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # ============================================================
+    # Pipeline Builder
+    # ============================================================
+    def _register_steps(self) -> dict[str, Step]:
+        return {
+            "summary": Step("summary", self._step_summary),
+            "error": Step("error", self._step_error),
+            "dedup": Step("dedup", self._step_dedup),
+            "block_ai": Step("block_ai", self._step_block_ai),
+            "parse_at": Step("parse_at", self._step_parse_at),
+            "clean": Step("clean", self._step_clean),
+            "tts": Step("tts", self._step_tts),
+            "t2i": Step("t2i", self._step_t2i),
+            "reply": Step("reply", self._step_reply),
+            "forward": Step("forward", self._step_forward),
+            "recall": Step("recall", self._step_recall),
+            "split": Step("split", self._step_split),
+        }
+
+    def _build_pipeline(self) -> Pipeline:
+        step_map = self._register_steps()
+        steps: list[Step] = []
+
+        if self.conf["pipeline"]["lock_order"]:
+            # 锁定顺序：按注册顺序，但只执行启用的
+            for name, step in step_map.items():
+                if name in self._enabled_steps:
+                    steps.append(step)
+        else:
+            # 自定义顺序
+            for name in self._enabled_steps:
+                step = step_map.get(name)
+                if not step:
+                    raise ValueError(f"Unknown pipeline step: {name}")
+                steps.append(step)
+
+        return Pipeline(steps=steps, llm_steps=self._llm_steps)
+
+    # ============================================================
+    # Steps
+    # ============================================================
+
+    async def _step_summary(
+        self,
+        event: AstrMessageEvent,
+        _chain: list[BaseMessageComponent],
+        result: MessageEventResult,
+    ) -> StepResult:
+        """图片摘要（直接发送并中断流水线）"""
+
+        if (
+            not isinstance(event, AiocqhttpMessageEvent)
+            or len(result.chain) != 1
+            or not isinstance(result.chain[0], Image)
+        ):
+            return None
+
+        obmsg = await event._parse_onebot_json(MessageChain(result.chain))
+        obmsg[0]["data"]["summary"] = random.choice(self.conf["summary"]["quotes"])
+
+        await event.bot.send(event.message_obj.raw_message, obmsg)  # type: ignore
+        event.should_call_llm(True)
+        result.chain.clear()
+
+        return False
+
+    async def _step_error(
+        self,
+        event: AstrMessageEvent,
+        _chain: list[BaseMessageComponent],
+        result: MessageEventResult,
+    ) -> bool | None:
+        econf = self.conf.get("error", {})
+        emode = econf.get("mode", "ignore")
+
+        if emode == "ignore":
+            return None
+
+        msg = result.get_plain_text()
+        for word in econf.get("keywords", []):
+            if word not in msg:
+                continue
+
+            if emode == "forward":
+                if self.admin_id:
+                    event.message_obj.group_id = ""
+                    event.message_obj.sender.user_id = self.admin_id
+                    logger.debug(f"已将消息发送目标改为管理员（{self.admin_id}）私聊")
+                else:
+                    logger.warning("未配置管理员ID，无法转发错误信息")
+
+            elif emode == "block":
+                event.set_result(event.plain_result(""))
+                logger.warning(f"已阻止发送报错提示：{msg}")
+                return False  # ⬅ 关键：终止后续 pipeline
+
+        return None
+
+    async def _step_dedup(
+        self,
+        event: AstrMessageEvent,
+        _chain: list[BaseMessageComponent],
+        result: MessageEventResult,
+    ) -> StepResult:
+        g: GroupState = StateManager.get_group(event.get_group_id())
+        msg = result.get_plain_text()
+        if msg in g.bot_msgs:
+            event.set_result(event.plain_result(""))
+            logger.warning(f"已阻止重复消息: {msg}")
+            return False
+
+        if result.is_llm_result():
+            g.bot_msgs.append(msg)
+
+        return None
+
+    async def _step_block_ai(self, event, _chain, result) -> StepResult:
+        msg = result.get_plain_text()
+        for word in self.conf["block_ai"]["keywords"]:
+            if word in msg:
+                event.set_result(event.plain_result(""))
+                logger.warning(f"已阻止人机话术: {msg}")
+                return False
+
+        return None
+
+    async def _step_parse_at(self, event, chain, _result) -> StepResult:
+        g = StateManager.get_group(event.get_group_id())
+        self.at_policy.handle(event, chain, g)
+        return None
+
+    async def _step_clean(self, _event, chain, _result) -> StepResult:
+        cconf = self.conf["clean"]
+
+        for seg in chain:
+            if not isinstance(seg, Plain):
+                continue
+            if len(seg.text) >= cconf["text_threshold"]:
+                continue
+
+            if cconf["bracket"]:
+                seg.text = re.sub(r"\[.*?\]", "", seg.text)
+            if cconf["parenthesis"]:
+                seg.text = re.sub(r"[（(].*?[）)]", "", seg.text)
+            if cconf["emotion_tag"]:
+                seg.text = re.sub(r"&&.*?&&", "", seg.text)
+            if cconf["emoji"]:
+                seg.text = emoji.replace_emoji(seg.text, replace="")
+            if cconf["lead"]:
+                for s in cconf["lead"]:
+                    if seg.text.startswith(s):
+                        seg.text = seg.text[len(s) :]
+            if cconf["tail"]:
+                for s in cconf["tail"]:
+                    if seg.text.endswith(s):
+                        seg.text = seg.text[: -len(s)]
+            if cconf["punctuation"]:
+                seg.text = re.sub(cconf["punctuation"], "", seg.text)
+
+        return None
+
+    async def _step_tts(self, event, chain, _result) -> StepResult:
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return None
+
+        tconf = self.conf["tts"]
+        if (
+            len(chain) != 1
+            or not isinstance(chain[0], Plain)
+            or len(chain[0].text) >= tconf["threshold"]
+            or random.random() >= tconf["prob"]
+        ):
+            return None
+
+        try:
+            char_id = tconf["character"].split("（", 1)[1][:-1]
+            audio = await event.bot.get_ai_record(
+                character=char_id,
+                group_id=int(tconf["group_id"]),
+                text=chain[0].text,
+            )
+            chain[:] = [Record.fromURL(audio)]
+        except Exception as e:
+            logger.error(f"TTS 失败: {e}")
+
+        return None
+
+    async def _step_t2i(self, _event, chain, _result) -> StepResult:
+        if not self.style:
+            return None
+
+        iconf = self.conf["t2i"]
+
+        if isinstance(chain[-1], Plain) and len(chain[-1].text) > iconf["threshold"]:
+            img = await self.style.AioRender(
+                text=chain[-1].text,
+                useImageUrl=True,
+                autoPage=iconf["auto_page"],
+            )
+            path = img.Save(self.image_cache_dir)
+            chain[-1] = Image.fromFileSystem(str(path))
+
+        return None
+
+    async def _step_reply(self, event, chain, _result) -> StepResult:
+        if self.conf["reply"]["threshold"] <= 0:
+            return None
+
+        if not all(isinstance(x, (Plain, Image, Face, At)) for x in chain):  # noqa: UP038
+            return None
+
+        g = StateManager.get_group(event.get_group_id())
+        msg_id = event.message_obj.message_id
+
+        if msg_id not in g.msg_queue:
+            return None
+
+        pushed = len(g.msg_queue) - g.msg_queue.index(msg_id) - 1
+        if pushed >= self.conf["reply_threshold"]:
+            chain.insert(0, Reply(id=msg_id))
+            g.msg_queue.clear()
+
+        return None
+
+    async def _step_forward(self, event, chain, _result) -> StepResult:
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return None
+        if not isinstance(chain[-1], Plain):
+            return None
+        if len(chain[-1].text) <= self.conf["forward"]["threshold"]:
+            return None
+
+        nodes = Nodes([])
+        name = await self._ensure_node_name(event)
+        uid = event.get_self_id()
+
+        for seg in chain:
+            nodes.nodes.append(Node(uin=uid, name=name, content=[seg]))
+
+        chain[:] = [nodes]
+        return None
+
+    async def _step_recall(self, event, _chain, _result) -> StepResult:
+        if isinstance(event, AiocqhttpMessageEvent):
+            await self.recaller.send_and_recall(event)
+        return None
+
+    async def _step_split(self, event, chain, _result) -> StepResult:
+        await self.splitter.split(event.unified_msg_origin, chain)
+        return None
+
+    # ============================================================
+    # Event Hooks
+    # ============================================================
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_message(self, event: AstrMessageEvent):
-        """接收消息后的处理"""
-        if event.get_extra("splitted_event"):
-            return
-
-        gid: str = event.get_group_id()
+        gid = event.get_group_id()
         sender_id = event.get_sender_id()
         self_id = event.get_self_id()
 
-        # 缓存最新消息ID
-        g: GroupState = StateManager.get_group(gid)
-        if self.conf["reply_threshold"] > 0 and sender_id != self_id:
-            # 使用按时间顺序的消息 ID 队列记录最近消息，用于后续判断机器人回复是否被后续消息顶上去
+        g = StateManager.get_group(gid)
+
+        if self.conf["reply"]["threshold"] > 0 and sender_id != self_id:
             g.msg_queue.append(event.message_obj.message_id)
 
-        # 缓存 “昵称 -> QQ”, 为解析假艾特提供映射
-        if self.conf["parse_at"]["enable"] and not self.conf["parse_at"]["at_str"]:
-            cache_name_num = 100  # 缓存数量默认100
-            sender_name = event.get_sender_name()
-            if len(g.name_to_qq) >= cache_name_num:
-                g.name_to_qq.popitem(last=False)  # FIFO 头删
-            g.name_to_qq[sender_name] = sender_id
+        if self.is_step_enabled("parse_at") and not self.conf["parse_at"]["at_str"]:
+            name = event.get_sender_name()
+            if len(g.name_to_qq) >= 100:
+                g.name_to_qq.popitem(last=False)
+            g.name_to_qq[name] = sender_id
 
     @filter.on_decorating_result(priority=15)
     async def on_decorating_result(self, event: AstrMessageEvent):
-        """发送消息前的预处理"""
-        if event.get_extra("splitted_event"):
-            return
-        # 过滤空消息
         result = event.get_result()
-        if not result:
-            return
-        chain = result.chain
-        if not chain:
+        if not result or not result.chain:
             return
 
-        # 图片外显
-        if (
-            isinstance(event, AiocqhttpMessageEvent)
-            and self.conf["summary"]["enable"]
-            and len(chain) == 1
-            and isinstance(chain[0], Image)
-        ):
-            obmsg: list[dict] = await event._parse_onebot_json(MessageChain(chain))
-            obmsg[0]["data"]["summary"] = random.choice(self.conf["summary"]["quotes"])
-            raw = event.message_obj.raw_message
-            await event.bot.send(raw, obmsg)  # type: ignore
-            event.should_call_llm(True)
-            chain.clear()
-            return
-
-        msg = result.get_plain_text()
-
-        # 拦截错误信息
-        econf = self.conf["error"]
-        emode = econf["mode"]
-        if emode != "ignore":
-            for word in econf["keywords"]:
-                if word in msg:
-                    if emode == "forward":
-                        if self.admin_id:
-                            event.message_obj.group_id = ""
-                            event.message_obj.sender.user_id = self.admin_id
-                            logger.debug(
-                                f"已将消息发送目标改为管理员（{self.admin_id}）私聊"
-                            )
-                        else:
-                            logger.warning("未配置管理员ID，无法转发错误信息")
-                    elif emode == "block":
-                        event.set_result(event.plain_result(""))
-                        logger.info(f"已阻止发送报错提示：{msg}")
-                        return
-
-        gid: str = event.get_group_id()
-        g: GroupState = StateManager.get_group(gid)
-
-        # 是否允许执行“LLM 专属逻辑”
-        allow_llm_logic = not self.conf["only_llm_result"] or result.is_llm_result()
-
-        if allow_llm_logic:
-            tconf = self.conf["toobot"]
-            # 拦截重复消息
-            if tconf["block_reread"] and msg in g.bot_msgs:
-                event.set_result(event.plain_result(""))
-                logger.info(f"已阻止LLM发送重复消息：{msg}")
-                return
-            if result.is_llm_result():
-                g.bot_msgs.append(msg)
-
-            # 拦截人机发言
-            if tconf["block_ai"]:
-                for word in tconf["keywords"]:
-                    if word in msg:
-                        event.set_result(event.plain_result(""))
-                        logger.info(f"已阻止LLM过于人机的发言:{msg}")
-                        return
-
-            # 解析 At 消息 + 概率At
-            if self.conf["parse_at"]["enable"]:
-                self.at_policy.handle(event, chain, g)
-
-            # 清洗文本消息
-            cconf = self.conf["clean"]
-            for seg in chain:
-                if isinstance(seg, Plain) and len(seg.text) < cconf["text_threshold"]:
-                    # 摘除中括号内容
-                    if cconf["bracket"]:
-                        seg.text = re.sub(r"\[.*?\]", "", seg.text)
-                    # 摘除小括号内容（半角/全角）
-                    if cconf["parenthesis"]:
-                        seg.text = re.sub(r"[（(].*?[）)]", "", seg.text)
-                    # 摘除情绪标签
-                    if cconf["emotion_tag"]:
-                        seg.text = re.sub(r"&&.*?&&", "", seg.text)
-                    # 清洗emoji
-                    if cconf["emoji"]:
-                        seg.text = emoji.replace_emoji(seg.text, replace="")
-                    # 去除指定开头字符
-                    if cconf["lead"]:
-                        for remove_lead in cconf["lead"]:
-                            if seg.text.startswith(remove_lead):
-                                seg.text = seg.text[len(remove_lead) :]
-                    # 去除指定结尾字符
-                    if cconf["tail"]:
-                        for remove_tail in cconf["tail"]:
-                            if seg.text.endswith(remove_tail):
-                                seg.text = seg.text[: -len(remove_tail)]
-                    # 整体清洗标点符号
-                    if cconf["punctuation"]:
-                        seg.text = re.sub(cconf["punctuation"], "", seg.text)
-
-            # 文转语音
-            if (
-                isinstance(event, AiocqhttpMessageEvent)
-                and self.conf["tts"]["enable"]
-                and self.conf["tts"]["group_id"]
-                and len(chain) == 1
-                and isinstance(chain[0], Plain)
-                and len(chain[0].text) < self.conf["tts"]["threshold"]
-                and random.random() < self.conf["tts"]["prob"]
-            ):
-                try:
-                    character_id = self.conf["tts"]["character"].split("（", 1)[1][:-1]
-                    group_id = int(self.conf["tts"]["group_id"])
-                    text = chain[0].text
-                    logger.debug(f"正在使用角色{character_id}生成语音：{text}")
-                    audio_path = await event.bot.get_ai_record(
-                        character=character_id,
-                        group_id=group_id,
-                        text=text,
-                    )
-                    chain[:] = [Record.fromURL(audio_path)]
-                except Exception as e:
-                    logger.error(f"语音生成失败：{e}")
-
-        # 文转图
-        iconf = self.conf["t2i"]
-        if iconf["enable"] and isinstance(chain[-1], Plain) and self.style:
-            seg = chain[-1]
-            if len(seg.text) > iconf["threshold"]:
-                img = await self.style.AioRender(
-                    text=seg.text, useImageUrl=True, autoPage=iconf["auto_page"]
-                )
-                img_path = img.Save(self.image_cache_dir)
-                chain[-1] = Image.fromFileSystem(str(img_path))
-
-        # 智能引用（基于消息队列）
-        if (
-            all(isinstance(seg, Plain | Image | Face | At) for seg in chain)
-            and self.conf["reply_threshold"] > 0
-        ):
-            msg_id = event.message_obj.message_id
-            queue = g.msg_queue
-
-            if msg_id in queue:
-                idx = queue.index(msg_id)
-                # 被顶了多少条 = 后面的数量
-                pushed = len(queue) - idx - 1
-
-                if pushed >= self.conf["reply_threshold"]:
-                    chain.insert(0, Reply(id=msg_id))
-                    logger.debug(
-                        f"已插入 Reply：被顶 {pushed} 条（阈值 {self.conf['reply_threshold']}）"
-                    )
-
-                    # 重置：防止连续引用，只移除已处理及更早的消息
-                    del queue[: idx + 1]
-
-        # 自动转发
-        if (
-            isinstance(event, AiocqhttpMessageEvent)
-            and self.conf["forward"]["enable"]
-            and isinstance(chain[-1], Plain)
-        ):
-            seg = chain[-1]
-            if len(seg.text) > self.conf["forward"]["threshold"]:
-                nodes = Nodes([])
-                self_id = event.get_self_id()
-                name = await self._ensure_node_name(event)
-                for seg in chain:
-                    nodes.nodes.append(Node(uin=self_id, name=name, content=[seg]))
-                chain[:] = [nodes]
-
-        # 自动撤回
-        if isinstance(event, AiocqhttpMessageEvent) and self.conf["recall"]["enable"]:
-            await self.recaller.send_and_recall(event)
-
-        # 分段回复
-        if self.conf["split"]["enable"]:
-            event.set_extra("splitted_event", True)
-            umo = event.unified_msg_origin
-            await self.splitter.split(umo, chain)
+        await self.pipeline.run(event, result.chain, result)

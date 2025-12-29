@@ -1,14 +1,83 @@
 {
-    "summary": {
-        "description": "图片外显",
-        "hint": "第一步：对单张图片的消息插入外显金句。外显指的是：正常的QQ没点进群聊前，若群聊发了一张图片，你只会在外面看见“[图片]”, 而图片外显功能就是为了让 “[图片]” 两字显示成更丰富的文本（仅aiocqhttp平台可用）",
+    "pipeline": {
+        "description": "管道配置",
         "type": "object",
+        "hint": "管道配置，用于配置组件的启停和运行顺序",
         "items": {
-            "enable": {
-                "description": "是否开启图片外显",
+            "lock_order": {
+                "description": "锁定步骤执行顺序",
+                "hint": "锁定后将按内置顺序执行：图片外显 → 报错拦截 → 复读拦截 → 人机拦截 → 解析艾特 → 文本清洗 → 文转语音 → 文转图片 → 智能引用 → 合并转发 → 自动撤回 → 分段回复",
                 "type": "bool",
                 "default": true
             },
+            "steps": {
+                "description": "启用的步骤",
+                "hint": "勾选表示启用该步骤；未锁定顺序时，将按当前列表顺序执行",
+                "type": "list",
+                "options": [
+                    "summary(图片外显)",
+                    "error(报错拦截)",
+                    "dedup(复读拦截)",
+                    "block_ai(人机拦截)",
+                    "parse_at(解析艾特)",
+                    "clean(文本清洗)",
+                    "tts(文转语音)",
+                    "t2i(文转图片)",
+                    "reply(智能引用)",
+                    "forward(合并转发)",
+                    "recall(自动撤回)",
+                    "split(分段回复)"
+                ],
+                "default": [
+                    "summary(图片外显)",
+                    "error(报错拦截)",
+                    "dedup(复读拦截)",
+                    "block_ai(人机拦截)",
+                    "parse_at(解析艾特)",
+                    "clean(文本清洗)",
+                    "tts(文转语音)",
+                    "t2i(文转图片)",
+                    "reply(智能引用)",
+                    "forward(合并转发)",
+                    "recall(自动撤回)",
+                    "split(分段回复)"
+                ]
+            },
+            "llm_steps": {
+                "description": "仅作用于 LLM 回复的步骤",
+                "hint": "勾选后，该步骤仅在 LLM 回复时生效，普通插件消息不会经过该步骤",
+                "type": "list",
+                "options": [
+                    "summary(图片外显)",
+                    "error(报错拦截)",
+                    "dedup(复读拦截)",
+                    "block_ai(人机拦截)",
+                    "parse_at(解析艾特)",
+                    "clean(文本清洗)",
+                    "tts(文转语音)",
+                    "t2i(文转图片)",
+                    "reply(智能引用)",
+                    "forward(合并转发)",
+                    "recall(自动撤回)",
+                    "split(分段回复)"
+                ],
+                "default": [
+                    "dedup(复读拦截)",
+                    "block_ai(人机拦截)",
+                    "parse_at(解析艾特)",
+                    "clean(文本清洗)",
+                    "tts(文转语音)",
+                    "reply(智能引用)",
+                    "split(分段回复)"
+                ]
+            }
+        }
+    },
+    "summary": {
+        "description": "【图片外显】",
+        "hint": "第一步: 对单张图片的消息插入外显金句。外显指的是：正常的QQ没点进群聊前，若群聊发了一张图片，你只会在外面看见“[图片]”, 而图片外显功能就是为了让 “[图片]” 两字显示成更丰富的文本（仅aiocqhttp平台可用）",
+        "type": "object",
+        "items": {
             "quotes": {
                 "description": "图片外显金句",
                 "hint": "随机抽取一句金句给图片外显使用。请自行添加",
@@ -23,7 +92,7 @@
         }
     },
     "error": {
-        "description": "拦截报错配置",
+        "description": "【报错拦截】",
         "type": "object",
         "hint": "第二步：全局拦截报错",
         "items": {
@@ -49,29 +118,24 @@
             }
         }
     },
-    "only_llm_result": {
-        "description": "只处理LLM结果",
-        "type": "bool",
-        "hint": "第三步：只处理 LLM返回的消息。建议打开。作用域: 人机拦截、艾特配置、文本清理、文转语音",
-        "default": true
-    },
-    "toobot": {
-        "description": "人机拦截配置",
+    "dedup": {
+        "description": "【复读拦截】",
         "type": "object",
-        "hint": "第四步：拦截人机发言",
+        "hint": "第三步：拦截复读式发言",
         "items": {
             "block_reread": {
-                "description": "拦截人机复读式发言",
+                "description": "预留配置",
                 "type": "bool",
-                "hint": "打开后，若Bot当前要发送的消息和前5次发送的消息有重复的，则被拦截",
+                "hint": "",
                 "default": true
-            },
-            "block_ai": {
-                "description": "拦截太人机的发言",
-                "type": "bool",
-                "hint": "打开后，根据关键词检测bot的发言是否太过于人机",
-                "default": true
-            },
+            }
+        }
+    },
+    "block_ai": {
+        "description": "【人机拦截】",
+        "type": "object",
+        "hint": "第四步：拦截人机式发言",
+        "items": {
             "keywords": {
                 "description": "拦截人机所用关键词",
                 "hint": "Bot发的消息中，包含列表中任一关键字时，判定为过于人机，消息将被拦截",
@@ -112,17 +176,11 @@
         }
     },
     "parse_at": {
-        "description": "艾特配置",
+        "description": "【解析艾特】",
         "type": "object",
         "hint": "第五步：将消息中句首的假艾特转换成真艾特, 再按概率保留或移除艾特",
         "default": true,
         "items": {
-            "enable": {
-                "description": "解析假艾特",
-                "hint": "支持解析的格式：@username @id [at:username] [at:id] ,且忽略中英文和大小写",
-                "type": "bool",
-                "default": true
-            },
             "at_str": {
                 "description": "转换成字符串艾特",
                 "hint": "将解析到的真艾特重新转换成字符串艾特，即 @username xxx (如果发现真艾特与文本间的空格消失了，可以尝试开启此选项，开启后插件会用字符串形式保住空格)",
@@ -143,7 +201,7 @@
         }
     },
     "clean": {
-        "description": "文本清理配置",
+        "description": "【文本清理】",
         "type": "object",
         "hint": "第六步：清理文本。注意清洗顺序：中括号内容 -> 小括号内容 -> 情绪标签 -> emoji -> 句首字符 -> 句尾字符 -> 整体清洗特殊符号",
         "items": {
@@ -210,19 +268,13 @@
         }
     },
     "tts": {
-        "description": "文转语音配置",
+        "description": "【文转语音】",
         "type": "object",
-        "hint": "第七步：将消息转为语音。（仅aiocqhttp平台可用）",
+        "hint": "第七步: 将消息转为语音。（仅aiocqhttp平台可用）。本插件基于QQ声聊实现TTS, 无需部署, 无需密钥。 开启前, 请先关闭Astrbot自带的TTS功能",
         "items": {
-            "enable": {
-                "description": "开启TTS",
-                "hint": "本插件基于QQ声聊实现TTS, 无需部署, 无需密钥。 开启前, 请先关闭Astrbot自带的TTS功能",
-                "type": "bool",
-                "default": false
-            },
             "group_id": {
                 "description": "中转群群号",
-                "hint": "必填！ 生成AI语音时, 用中转群中转一次后，可以避免显示AI语音，不填表示不中转",
+                "hint": "必填！ 生成AI语音时, 用中转群中转一次后，可以避免显示AI语音",
                 "type": "string",
                 "default": ""
             },
@@ -281,16 +333,10 @@
         }
     },
     "t2i": {
-        "description": "文转图配置",
+        "description": "【文转图片】",
         "type": "object",
-        "hint": "第八步：将长文本转为图片",
+        "hint": "第八步：将长文本转为图片。本插件使用 pillowmd 渲染长文本，轻量易用又稳定。如果可以, 开启此功能前, 请先关闭Astrbot的自带的长文本转图功能",
         "items": {
-            "enable": {
-                "description": "开启长文本转图",
-                "hint": "本插件使用 pillowmd 渲染长文本，轻量易用又稳定。如果可以, 开启此功能前, 请先关闭Astrbot的自带的长文本转图功能",
-                "type": "bool",
-                "default": true
-            },
             "threshold": {
                 "description": "文本长度阈值",
                 "hint": "当消息长度超过此阈值时, 执行长文本处理",
@@ -322,28 +368,29 @@
             }
         }
     },
-    "reply_threshold": {
-        "description": "引用阈值",
-        "hint": "第九步：引用消息。当bot要回复的消息被其他人插嘴了几条时，则引用要回复的消息。 设为 0 表示关闭引用功能, 请提前关闭Astrbot自动的Reply功能",
-        "type": "int",
-        "slider": {
-            "min": 0,
-            "max": 4,
-            "step": 1
-        },
-        "default": 1
+    "reply": {
+        "description": "【智能引用】",
+        "type": "object",
+        "hint": "第九步: 当bot要回复的消息被其他人插嘴时， 引用要回复的消息。",
+        "items": {
+            "threshold": {
+                "description": "引用阈值",
+                "hint": "定义当bot要回复的消息被其他人插嘴了几条时，则引用要回复的消息。 设为 0 表示关闭引用功能, 请提前关闭Astrbot自动的Reply功能",
+                "type": "int",
+                "slider": {
+                    "min": 0,
+                    "max": 4,
+                    "step": 1
+                },
+                "default": 1
+            }
+        }
     },
     "forward": {
-        "description": "转发配置",
-        "hint": "第十步：将长文本合并转发（仅aiocqhttp平台可用）",
+        "description": "【合并转发】",
+        "hint": "第十步: 将长文本合并转发（仅aiocqhttp平台可用）",
         "type": "object",
         "items": {
-            "enable": {
-                "description": "开启自动转发",
-                "hint": "如果可以, 开启此功能前, 请先关闭Astrbot的自带的转发功能",
-                "type": "bool",
-                "default": true
-            },
             "threshold": {
                 "description": "文本长度阈值",
                 "hint": "转发长度超过此阈值时执行转发操作",
@@ -364,15 +411,10 @@
         }
     },
     "recall": {
-        "description": "撤回配置",
+        "description": "【自动撤回】",
         "hint": "第十一步：检测发出的消息是否需要撤回，并执行撤回操作（仅aiocqhttp平台可用）。注意: 被判定为需要撤回的消息，将不会执行Astrbot自带的文转图、文转语音、合并转发、分段回复",
         "type": "object",
         "items": {
-            "enable": {
-                "description": "开启自动撤回",
-                "type": "bool",
-                "default": false
-            },
             "keywords": {
                 "description": "触发撤回的关键词",
                 "hint": "消息中含有这些关键词时触发自动撤回操作",
@@ -397,16 +439,10 @@
         }
     },
     "split": {
-        "description": "分段回复配置",
+        "description": "【分段回复】",
         "hint": "第十二步：进行分段回复",
         "type": "object",
         "items": {
-            "enable": {
-                "description": "开启自动分段回复",
-                "hint": "开启此功能前, 务必先关闭Astrbot的自带的分段回复功能",
-                "type": "bool",
-                "default": false
-            },
             "chars": {
                 "description": "触发分段的字符",
                 "hint": "文字后面带这些符号就会分段，（换行是\\n，空格是\\s），如：，。？！\\n",
