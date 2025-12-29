@@ -62,7 +62,7 @@ class AtPolicy:
     # -------------------------
     # 假 at 解析（只读）
     # -------------------------
-    def _parse_fake_at(self, chain, gstate):
+    def _parse_fake_at(self, chain: list[BaseMessageComponent], gstate: GroupState):
         """
         只识别，不修改
         """
@@ -77,7 +77,7 @@ class AtPolicy:
             qq = m.group(1) or m.group(3)
             nickname = m.group(2) or m.group(4)
 
-            if not qq and nickname:
+            if not qq and nickname and len(gstate.name_to_qq) > 0:
                 qq = gstate.name_to_qq.get(nickname)
 
             return idx, qq, nickname

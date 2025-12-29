@@ -121,11 +121,12 @@ class OutputPlugin(Star):
 
         # 缓存最新消息ID
         g: GroupState = StateManager.get_group(gid)
-        if self.conf["reply_threshold"] and sender_id != self_id:
-            g.after_bot_count += 1
+        if self.conf["reply_threshold"] > 0 and sender_id != self_id:
+            # 使用按时间顺序的消息 ID 队列记录最近消息，用于后续判断机器人回复是否被后续消息顶上去
+            g.msg_queue.append(event.message_obj.message_id)
 
         # 缓存 “昵称 -> QQ”, 为解析假艾特提供映射
-        if self.conf["parse_at"]["enable"]:
+        if self.conf["parse_at"]["enable"] and not self.conf["parse_at"]["at_str"]:
             cache_name_num = 100  # 缓存数量默认100
             sender_name = event.get_sender_name()
             if len(g.name_to_qq) >= cache_name_num:
@@ -135,6 +136,8 @@ class OutputPlugin(Star):
     @filter.on_decorating_result(priority=15)
     async def on_decorating_result(self, event: AstrMessageEvent):
         """发送消息前的预处理"""
+        if event.get_extra("splitted_event"):
+            return
         # 过滤空消息
         result = event.get_result()
         if not result:
@@ -273,17 +276,27 @@ class OutputPlugin(Star):
                 img_path = img.Save(self.image_cache_dir)
                 chain[-1] = Image.fromFileSystem(str(img_path))
 
-        # 智能引用
+        # 智能引用（基于消息队列）
         if (
             all(isinstance(seg, Plain | Image | Face | At) for seg in chain)
             and self.conf["reply_threshold"] > 0
         ):
-            # 当前事件也会使 g.after_bot_count 加 1，这里用  -1 表示只统计之前的消息
-            if g.after_bot_count - 1 >= self.conf["reply_threshold"]:
-                chain.insert(0, Reply(id=event.message_obj.message_id))
-                logger.debug("已插入Reply组件")
-            # 重置计数器
-            g.after_bot_count = 0
+            msg_id = event.message_obj.message_id
+            queue = g.msg_queue
+
+            if msg_id in queue:
+                idx = queue.index(msg_id)
+                # 被顶了多少条 = 后面的数量
+                pushed = len(queue) - idx - 1
+
+                if pushed >= self.conf["reply_threshold"]:
+                    chain.insert(0, Reply(id=msg_id))
+                    logger.debug(
+                        f"已插入 Reply：被顶 {pushed} 条（阈值 {self.conf['reply_threshold']}）"
+                    )
+
+                    # 重置：防止连续引用，只移除已处理及更早的消息
+                    del queue[: idx + 1]
 
         # 自动转发
         if (
