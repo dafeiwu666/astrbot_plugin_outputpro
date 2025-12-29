@@ -77,7 +77,7 @@ class AtPolicy:
             qq = m.group(1) or m.group(3)
             nickname = m.group(2) or m.group(4)
 
-            if not qq and nickname and gstate.name_to_qq:
+            if not qq and nickname and len(gstate.name_to_qq) > 0:
                 qq = gstate.name_to_qq.get(nickname)
 
             return idx, qq, nickname
