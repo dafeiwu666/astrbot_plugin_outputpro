@@ -212,18 +212,19 @@ class OutputPlugin(Star):
 
     async def _step_summary(self, ctx: OutContext) -> StepResult:
         """图片外显（直接发送并中断流水线）"""
+        e = ctx.event
         if (
-            not isinstance(ctx.event, AiocqhttpMessageEvent)
+            not isinstance(e, AiocqhttpMessageEvent)
             or len(ctx.chain) != 1
             or not isinstance(ctx.result.chain[0], Image)
         ):
             return None
 
-        obmsg = await ctx.event._parse_onebot_json(MessageChain(ctx.result.chain))
+        obmsg = await e._parse_onebot_json(MessageChain(ctx.result.chain))
         obmsg[0]["data"]["summary"] = random.choice(self.conf["summary"]["quotes"])
 
-        await ctx.client.send(ctx.event.message_obj.raw_message, obmsg)  # type: ignore
-        ctx.event.should_call_llm(True)
+        await e.bot.send(ctx.event.message_obj.raw_message, obmsg)  # type: ignore
+        e.should_call_llm(True)
         ctx.result.chain.clear()
 
         return False
@@ -279,7 +280,6 @@ class OutputPlugin(Star):
         return None
 
     async def _step_parse_at(self, ctx: OutContext) -> StepResult:
-        g = StateManager.get_group(ctx.event.get_group_id())
         self.at_policy.handle(ctx)
         return None
 

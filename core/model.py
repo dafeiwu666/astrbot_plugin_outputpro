@@ -1,6 +1,6 @@
 from collections import OrderedDict, deque
+from dataclasses import dataclass
 
-from attr import dataclass
 from pydantic import BaseModel, Field
 
 from astrbot.core.message.components import BaseMessageComponent
