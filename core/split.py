@@ -63,7 +63,7 @@ class MessageSplitter:
         sconf = config["split"]
 
         # 用于 Plain 文本分割
-        self.split_pattern = self._build_split_pattern(sconf["chars"])
+        self.split_pattern = self._build_split_pattern(sconf["char_list"])
 
         # 最大分段数（<=0 表示不限制）
         self.max_count = sconf["max_count"]
@@ -80,14 +80,14 @@ class MessageSplitter:
         # 最大文本长度归一化，用于映射到 min/max
         self._max_len_for_delay = 150
 
-    def _build_split_pattern(self, chars: list[str]) -> str:
+    def _build_split_pattern(self, char_list: list[str]) -> str:
         """
-        chars 来自前端配置，例如：
+        char_list 来自前端配置，例如：
         ["。", "？", "\\s", "\\n"]
         """
         tokens = []
 
-        for ch in chars:
+        for ch in char_list:
             if ch == "\\n":
                 tokens.append("\n")
             elif ch == "\\s":

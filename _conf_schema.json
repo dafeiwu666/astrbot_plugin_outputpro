@@ -443,7 +443,7 @@
         "hint": "第十二步：进行分段回复",
         "type": "object",
         "items": {
-            "chars": {
+            "char_list": {
                 "description": "触发分段的字符",
                 "hint": "文字后面带这些符号就会分段，（换行是\\n，空格是\\s），如：，。？！\\n",
                 "type": "list",
