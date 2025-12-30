@@ -60,14 +60,14 @@ class Pipeline:
         self.steps = steps
         self.llm_steps = llm_steps
 
-    def llm_allow(self, step_name: str, result) -> bool:
+    def llm_allow(self, step_name: str, is_llm: bool) -> bool:
         if not self.llm_steps:
             return True
-        return step_name not in self.llm_steps or result.is_llm_result()
+        return step_name not in self.llm_steps or is_llm
 
     async def run(self, ctx: OutContext) -> bool:
         for step in self.steps:
-            if not self.llm_allow(step.name, ctx.result):
+            if not self.llm_allow(step.name, ctx.is_llm):
                 continue
             ret = await step.handler(ctx)
             if ret is False:
@@ -208,20 +208,19 @@ class OutputPlugin(Star):
 
     async def _step_summary(self, ctx: OutContext) -> StepResult:
         """图片外显（直接发送并中断流水线）"""
-        e = ctx.event
         if (
-            not isinstance(e, AiocqhttpMessageEvent)
+            not isinstance(ctx.event, AiocqhttpMessageEvent)
             or len(ctx.chain) != 1
-            or not isinstance(ctx.result.chain[0], Image)
+            or not isinstance(ctx.chain[0], Image)
         ):
             return None
 
-        obmsg = await e._parse_onebot_json(MessageChain(ctx.result.chain))
+        obmsg = await ctx.event._parse_onebot_json(MessageChain(ctx.chain))
         obmsg[0]["data"]["summary"] = random.choice(self.conf["summary"]["quotes"])
 
-        await e.bot.send(ctx.event.message_obj.raw_message, obmsg)  # type: ignore
-        e.should_call_llm(True)
-        ctx.result.chain.clear()
+        await ctx.event.bot.send(ctx.event.message_obj.raw_message, obmsg)  # type: ignore
+        ctx.event.should_call_llm(True)
+        ctx.chain.clear()
 
         return False
 
@@ -254,23 +253,21 @@ class OutputPlugin(Star):
 
     async def _step_dedup(self, ctx: OutContext) -> StepResult:
 
-        msg = ctx.result.get_plain_text()
-        if msg in ctx.group.bot_msgs:
+        if ctx.plain in ctx.group.bot_msgs:
             ctx.event.set_result(ctx.event.plain_result(""))
-            logger.warning(f"已阻止重复消息: {msg}")
+            logger.warning(f"已阻止重复消息: {ctx.plain}")
             return False
 
-        if ctx.result.is_llm_result():
-            ctx.group.bot_msgs.append(msg)
+        if ctx.is_llm:
+            ctx.group.bot_msgs.append(ctx.plain)
 
         return None
 
     async def _step_block_ai(self, ctx: OutContext) -> StepResult:
-        msg = ctx.result.get_plain_text()
         for word in self.conf["block_ai"]["keywords"]:
-            if word in msg:
+            if word in ctx.plain:
                 ctx.event.set_result(ctx.event.plain_result(""))
-                logger.warning(f"已阻止人机话术: {msg}")
+                logger.warning(f"已阻止人机话术: {ctx.plain}")
                 return False
 
         return None
@@ -437,7 +434,7 @@ class OutputPlugin(Star):
         ctx = OutContext(
             event=event,
             chain=result.chain,
-            result=result,
+            is_llm=result.is_llm_result(),
             plain=plain,
             gid=gid,
             uid=uid,

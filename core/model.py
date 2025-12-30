@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pydantic import BaseModel, Field
 
 from astrbot.core.message.components import BaseMessageComponent
-from astrbot.core.message.message_event_result import MessageEventResult
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 
 
@@ -33,11 +32,11 @@ class StateManager:
 
 @dataclass
 class OutContext:
-    """上下文"""
+    """输出消息上下文"""
 
     event: AstrMessageEvent
     chain: list[BaseMessageComponent]
-    result: MessageEventResult
+    is_llm: bool
     plain: str
     gid: str
     uid: str
