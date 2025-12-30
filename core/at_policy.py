@@ -39,19 +39,13 @@ class AtPolicy:
         return False
 
     def _insert_at(self, chain, qq, nickname=None):
-        if not self.conf["parse_at"]["enable"]:
-            return
-
-        display = nickname or qq
-
-        # 找第一个 Plain
         for i, seg in enumerate(chain):
             if not isinstance(seg, Plain):
                 continue
 
-            if self.conf["parse_at"]["at_str"]:
+            if self.conf["parse_at"]["at_str"] and nickname:
                 # 原地修改
-                seg.text = f"@{display} " + seg.text
+                seg.text = f"@{nickname} " + seg.text
             else:
                 # 真 At：插在 Plain 前
                 chain.insert(i, At(qq=qq))
