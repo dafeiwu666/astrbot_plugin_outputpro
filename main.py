@@ -378,10 +378,7 @@ class OutputPlugin(Star):
         nodes = Nodes([])
         name = await self._ensure_node_name(ctx.event)
         uid = ctx.event.get_self_id()
-
-        for seg in ctx.chain:
-            nodes.nodes.append(Node(uin=uid, name=name, content=[seg]))
-
+        nodes.nodes.append(Node(uin=uid, name=name, content=ctx.chain))
         ctx.chain[:] = [nodes]
         return None
 
